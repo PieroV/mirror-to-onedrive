@@ -1,9 +1,12 @@
 import models
 
 from datetime import datetime
+import logging
 import sqlite3
 
 DB_FILE = 'items.db'
+
+logger = logging.getLogger(__name__)
 
 
 def record_to_item(row):
@@ -34,7 +37,7 @@ def item_to_tuple(item, id_as_last=False):
         lst[7] = None
     else:
         lst[4] = 0
-        lst[6] = datetime.timestamp(lst[6])
+        lst[6] = lst[6].timestamp()
     if id_as_last:
         lst.append(lst.pop(0))
     return tuple(lst)
@@ -48,7 +51,12 @@ class Database:
     def add_item(self, item):
         query = 'INSERT INTO item VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
         cur = self.db.cursor()
-        cur.execute(query, item_to_tuple(item))
+        try:
+            cur.execute(query, item_to_tuple(item))
+        except sqlite3.IntegrityError as e:
+            logger.error('Could not add item %s', item.onedrive_id, exc_info=e)
+            return False
+        return True
 
     def update_items(self, items):
         items = [item_to_tuple(i, True) for i in items]
@@ -103,6 +111,9 @@ class Database:
 
     def commit(self):
         self.db.commit()
+
+    def vacuum(self):
+        self.db.cursor().execute('VACUUM;')
 
     def close(self):
         self.db.close()

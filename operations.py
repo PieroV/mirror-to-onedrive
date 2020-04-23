@@ -1,10 +1,26 @@
 import client
 import database
 
+from quickxorhash import quickxorhash
+
+import base64
 import logging
 import pathlib
 
 logger = logging.getLogger(__name__)
+
+
+def quickxor_file(filename):
+    h = quickxorhash()
+    with open(filename, 'rb') as f:
+        buf_size = 4096
+        while True:
+            buf = f.read(buf_size)
+            if buf:
+                h.update(buf)
+            else:
+                break
+    return base64.b64encode(h.digest()).decode()
 
 
 class Node:
@@ -28,14 +44,22 @@ class Node:
         else:
             self.onedrive_path = ''
 
-    def act(self):
+    def act(self, check_hash=False):
         if self.path is not None and self.item is not None:
             logger.debug('Act: update %s, %s', self.path,
                          self.item.onedrive_id)
             self.check_folder()
+
+            if self.item.original_path != str(self.path):
+                # Usually this happens only the first time, so an
+                # additional query here is not that bad
+                self.item.original_path = str(self.path)
+                self.db.update_items([self.item])
+                self.queries += 1
+
             # Directories are always up to date
             if self.path.is_file():
-                self.update()
+                self.update(check_hash)
         elif self.path is not None:
             logger.debug('Act: create %s', self.path)
             self.create()
@@ -56,7 +80,7 @@ class Node:
         self.delete()
         self.create()
 
-    def update(self):
+    def update(self, check_hash=False):
         if self.path is None or self.item is None:
             logger.error('Called update with None path or item')
             return False
@@ -66,9 +90,18 @@ class Node:
 
         mtime_window = 2
         stat = self.path.stat()
-        if (stat.st_size == self.item.size
-                and (abs(stat.st_mtime - self.item.mdate.timestamp())
-                     < mtime_window)):
+        updated = (stat.st_size == self.item.size
+                   and (abs(stat.st_mtime - self.item.mdate.timestamp())
+                        < mtime_window))
+
+        if check_hash and updated:
+            hash_ = quickxor_file(str(self.path))
+            if hash_ != self.item.hash:
+                updated = False
+                logger.info('%s passed size and mtime check but not hash',
+                            self.path)
+
+        if updated:
             logger.debug('Item %s already up to date', self.path)
             return True
 
@@ -206,6 +239,21 @@ class ChildrenLister:
                 self.conflicts[lower] = files
         self.new_children = to_add
 
+    def resolve_conflicts(self):
+        for lower, files in self.conflicts.items():
+            item = self.orphan_items[lower]
+            associate_to = -1
+            for i in range(len(files)):
+                hash_ = quickxor_file(files[i])
+                if hash_ == item.hash:
+                    associate_to = i
+                    break
+            if associate_to != -1:
+                self.add_child(files.pop(associate_to), item)
+                del self.orphaned_items[lower]
+            # Leave the rest to OneDrive
+            self.new_children += files
+
     def get_children(self):
         logger.debug('Started children lister for %s', self.path)
 
@@ -216,7 +264,7 @@ class ChildrenLister:
         # Resolve what does not create conclifcts (for us)
         self.resolve_simple()
         # Try to resolve any conflict
-        # TODO
+        self.resolve_conflicts()
 
         oprhaned_nodes = [Node(None, item, self.db, self.client, self.node)
                           for item in self.orphaned_items.values()]
@@ -231,6 +279,11 @@ class Operations:
     def __init__(self):
         self.db = database.Database()
         self.client = client.Client()
+
+        # Get the drives, only to test the connection, raise any error,
+        # if needed, or refresh the token with an easy request
+        # a GET, without e.g. POST data
+        self.client.get_drives()
 
     def populate_db(self):
         # TODO Use the existing field
@@ -274,8 +327,9 @@ class Operations:
                     self.db.commit()
 
         self.db.commit()
+        self.db.vacuum()
 
-    def compare_trees(self):
+    def compare_trees(self, check_hash=False):
         save_every_n = 1000
 
         to_work = []
@@ -289,7 +343,7 @@ class Operations:
         unsaved = 0
         while to_work:
             node = to_work.pop()
-            node.act()
+            node.act(check_hash)
             to_work = node.get_children() + to_work
 
             unsaved += node.queries
@@ -297,16 +351,3 @@ class Operations:
                 self.db.commit()
                 logger.debug('Committing (%d unsaved)', unsaved)
                 unsaved = 0
-
-
-if __name__ == '__main__':
-    logger.setLevel(logging.INFO)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger.addHandler(ch)
-    o = Operations()
-    # o.populate_db()
-    o.compare_trees()
-    o.db.commit()

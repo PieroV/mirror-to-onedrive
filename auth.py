@@ -5,7 +5,7 @@ LOGIN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
 
 
 def login():
-	cl = client.Client()
+    cl = client.Client()
     oauth = cl.oauth
     oauth.redirect_uri = cl.config['redirect_uri']
     authorization_url, state = oauth.authorization_url(LOGIN_URL)

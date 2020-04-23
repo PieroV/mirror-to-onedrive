@@ -29,7 +29,7 @@ def date_from_onedrive(datestring):
 
 
 def date_to_onedrive(dt):
-    return dt.astimezone(dateutil.tz.UTC).strftime('%Y-%m-%dT%H:%m:%S.%fZ')
+    return dt.astimezone(dateutil.tz.UTC).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
 
 def json_to_item(obj, parent_id=None):
@@ -105,6 +105,12 @@ class Client:
         with open(TOKEN_FILE, 'w') as f:
             logger.debug('Saving refreshed token')
             json.dump(token, f)
+            f.write('\n')
+
+    def get_drives(self):
+        r = self.oauth.get(DRIVE_URL + 'root')
+        if r.status_code == 200:
+            return r.json()
 
     def get_children(self, parent_id):
         select = '?select=id,name,file,folder,size,fileSystemInfo'
@@ -198,17 +204,18 @@ class Client:
             logger.warning('Ignoring empty file %s', source_filename)
             return None
 
-        obj = {
-            'item': {
-                'fileSystemInfo': {
-                    'createdDateTime': date_to_onedrive(ctime),
-                    'lastModifiedDateTime': date_to_onedrive(mtime),
-                }
+        times = {
+            'fileSystemInfo': {
+                'createdDateTime': date_to_onedrive(ctime),
+                'lastModifiedDateTime': date_to_onedrive(mtime),
             }
         }
-        if not target_is_id:
-            obj['name']: os.path.basename(target)
-            obj['@microsoft.graph.conflictBehavior'] = 'rename'
+        if target_is_id:
+            obj = {'item': times}
+        else:
+            # Bug in OneDrive? This options collides with the other
+            # ones (error 400)
+            obj = {'item': {'@microsoft.graph.conflictBehavior': 'rename'}}
 
         r = self.oauth.post(create_url, json=obj)
         if r.status_code != 200:
@@ -237,4 +244,16 @@ class Client:
 
         item = json_to_item(r.json(), parent_id)
         item.original_path = source_filename
+
+        if not target_is_id:
+            # Set the times after the creation (see above)
+            patch_url = '{}items/{}/createUploadSession'.format(
+                DRIVE_URL, item.onedrive_id)
+            r = self.oauth.patch(patch_url, json=times)
+            if r.status_code != 200:
+                logger.warning(
+                    'Could not set the correct times to the newly uploaded '
+                    'file (id=%s, status=%d, response=%s)', item.onedrive_id,
+                    r.status_code, r.text)
+
         return item
