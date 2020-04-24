@@ -48,7 +48,8 @@ class Node:
         if self.path is not None and self.item is not None:
             logger.debug('Act: update %s, %s', self.path,
                          self.item.onedrive_id)
-            self.check_folder()
+            if not self.check_folder():
+                return
 
             if self.item.original_path != str(self.path):
                 # Usually this happens only the first time, so an
@@ -73,12 +74,13 @@ class Node:
     def check_folder(self):
         if (self.item is None or self.path is None
                 or self.item.is_folder == self.path.is_dir()):
-            return
+            return True
 
         logging.warning('Inconsistency in path and item is_folder. '
                         'Deleting old item and creating a new one.')
         self.delete()
         self.create()
+        return False
 
     def update(self, check_hash=False):
         if self.path is None or self.item is None:
@@ -286,12 +288,12 @@ class Operations:
         self.client.get_drives()
 
     def populate_db(self):
-        # TODO Use the existing field
-
         logger.info('Starting populating the database')
 
         commit_every_n = 1000
         to_get = []
+
+        self.db.mark_not_existing()
 
         for one_path, local_path in self.client.config['synchronize'].items():
             item = self.client.get_item_by_path(one_path)
@@ -326,6 +328,7 @@ class Operations:
                 if counter % commit_every_n == 0:
                     self.db.commit()
 
+        self.db.delete_not_existing()
         self.db.commit()
         self.db.vacuum()
 

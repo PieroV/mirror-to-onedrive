@@ -109,6 +109,14 @@ class Database:
         if row:
             return record_to_item(row)
 
+    def mark_not_existing(self):
+        cur = self.db.cursor()
+        cur.execute('UPDATE item SET existing = 0;')
+
+    def delete_not_existing(self):
+        cur = self.db.cursor()
+        cur.execute('DELETE FROM item WHERE existing = 0;')
+
     def commit(self):
         self.db.commit()
 
