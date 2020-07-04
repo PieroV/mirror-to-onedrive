@@ -2,6 +2,7 @@
 from operations import Operations
 
 from datetime import datetime
+import sys
 import time
 
 
@@ -18,6 +19,7 @@ def get_day():
 def service():
     repeat_interval = 4 * 3600  # Run every 4 hours
     hashes_frequency = 3  # Check hashes every 3 days
+    fail_sleep = 1800  # If failed, sleep for half an hour
 
     # Avoid doing long operations when starting the service, postpone
     # them to the next iteration
@@ -39,12 +41,25 @@ def service():
             o.db.vacuum()
             last_vacuum = today
 
-        if db_recreated != this_week:
-            o.populate_db()
+        try:
+            if db_recreated != this_week:
+                o.populate_db()
+                db_recreated = this_week
+        except:
+            # You should think to something more clever
+            print('Something failed', sys.exc_info())
+            time.sleep(fail_sleep)
+            continue
 
         check_hashes = (today - hashes_checked) > hashes_frequency
 
-        o.compare_trees(check_hashes)
+        try:
+            o.compare_trees(check_hashes)
+        except:
+            # As above
+            print('Something failed', sys.exc_info())
+            time.sleep(fail_sleep)
+            continue
 
         if check_hashes:
             hashes_checked = today
